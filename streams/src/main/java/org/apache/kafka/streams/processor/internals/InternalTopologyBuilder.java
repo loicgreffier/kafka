@@ -23,6 +23,7 @@ import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.TopologyConfig;
+import org.apache.kafka.streams.errors.ProcessingExceptionHandler;
 import org.apache.kafka.streams.errors.TopologyException;
 import org.apache.kafka.streams.internals.ApiUtils;
 import org.apache.kafka.streams.processor.StateStore;
@@ -172,12 +173,15 @@ public class InternalTopologyBuilder {
     private static class ProcessorNodeFactory<KIn, VIn, KOut, VOut> extends NodeFactory<KIn, VIn, KOut, VOut> {
         private final ProcessorSupplier<KIn, VIn, KOut, VOut> supplier;
         final Set<String> stateStoreNames = new HashSet<>();
+        private final ProcessingExceptionHandler processingExceptionHandler;
 
         ProcessorNodeFactory(final String name,
                              final String[] predecessors,
-                             final ProcessorSupplier<KIn, VIn, KOut, VOut> supplier) {
+                             final ProcessorSupplier<KIn, VIn, KOut, VOut> supplier,
+                             final ProcessingExceptionHandler processingExceptionHandler) {
             super(name, predecessors.clone());
             this.supplier = supplier;
+            this.processingExceptionHandler = processingExceptionHandler;
         }
 
         public void addStateStore(final String stateStoreName) {
@@ -186,7 +190,7 @@ public class InternalTopologyBuilder {
 
         @Override
         public ProcessorNode<KIn, VIn, KOut, VOut> build() {
-            return new ProcessorNode<>(name, supplier.get(), stateStoreNames);
+            return new ProcessorNode<>(name, supplier.get(), stateStoreNames, processingExceptionHandler);
         }
 
         @Override
@@ -197,17 +201,20 @@ public class InternalTopologyBuilder {
 
     private static class FixedKeyProcessorNodeFactory<KIn, VIn, VOut> extends ProcessorNodeFactory<KIn, VIn, KIn, VOut> {
         private final FixedKeyProcessorSupplier<KIn, VIn, VOut> supplier;
+        private final ProcessingExceptionHandler processingExceptionHandler;
 
         FixedKeyProcessorNodeFactory(final String name,
-                             final String[] predecessors,
-                             final FixedKeyProcessorSupplier<KIn, VIn, VOut> supplier) {
-            super(name, predecessors.clone(), null);
+                                     final String[] predecessors,
+                                     final FixedKeyProcessorSupplier<KIn, VIn, VOut> supplier,
+                                     final ProcessingExceptionHandler processingExceptionHandler) {
+            super(name, predecessors.clone(), null, processingExceptionHandler);
             this.supplier = supplier;
+            this.processingExceptionHandler = processingExceptionHandler;
         }
 
         @Override
         public ProcessorNode<KIn, VIn, KIn, VOut> build() {
-            return new ProcessorNode<>(name, supplier.get(), stateStoreNames);
+            return new ProcessorNode<>(name, supplier.get(), stateStoreNames, processingExceptionHandler);
         }
 
         @Override
@@ -508,7 +515,7 @@ public class InternalTopologyBuilder {
             }
         }
 
-        nodeFactories.put(name, new ProcessorNodeFactory<>(name, predecessorNames, supplier));
+        nodeFactories.put(name, new ProcessorNodeFactory<>(name, predecessorNames, supplier, this.topologyConfigs.applicationConfigs.defaultProcessingExceptionHandler()));
         nodeGrouper.add(name);
         nodeGrouper.unite(name, predecessorNames);
         nodeGroups = null;
@@ -601,7 +608,8 @@ public class InternalTopologyBuilder {
         final ProcessorNodeFactory<KIn, VIn, Void, Void> nodeFactory = new ProcessorNodeFactory<>(
             processorName,
             predecessors,
-            stateUpdateSupplier
+            stateUpdateSupplier,
+            this.topologyConfigs.applicationConfigs.defaultProcessingExceptionHandler()
         );
 
         globalTopics.add(topic);

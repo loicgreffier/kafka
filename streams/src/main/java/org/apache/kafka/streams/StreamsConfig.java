@@ -36,11 +36,7 @@ import org.apache.kafka.common.metrics.Sensor.RecordingLevel;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.utils.Utils;
-import org.apache.kafka.streams.errors.DefaultProductionExceptionHandler;
-import org.apache.kafka.streams.errors.DeserializationExceptionHandler;
-import org.apache.kafka.streams.errors.LogAndFailExceptionHandler;
-import org.apache.kafka.streams.errors.ProductionExceptionHandler;
-import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.errors.*;
 import org.apache.kafka.streams.internals.StreamsConfigUtils;
 import org.apache.kafka.streams.internals.UpgradeFromValues;
 import org.apache.kafka.streams.processor.FailOnInvalidTimestamp;
@@ -537,6 +533,12 @@ public class StreamsConfig extends AbstractConfig {
 
     /** {@code default.deserialization.exception.handler} */
     @SuppressWarnings("WeakerAccess")
+    public static final String DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG = "default.processing.exception.handler";
+    public static final String DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_DOC = "Exception handling class that implements the <code>org.apache.kafka.streams.errors.DeserializationExceptionHandler</code> interface.";
+
+
+    /** {@code default.deserialization.exception.handler} */
+    @SuppressWarnings("WeakerAccess")
     public static final String DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG = "default.deserialization.exception.handler";
     public static final String DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_DOC = "Exception handling class that implements the <code>org.apache.kafka.streams.errors.DeserializationExceptionHandler</code> interface.";
 
@@ -853,6 +855,11 @@ public class StreamsConfig extends AbstractConfig {
                     Importance.HIGH,
                     STATE_DIR_DOC,
                     "${java.io.tmpdir}")
+            .define(DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG,
+                    Type.CLASS,
+                    ProcessingLogAndFailExceptionHandler.class.getName(),
+                    Importance.HIGH,
+                    DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_DOC)
 
             // MEDIUM
 
@@ -1891,6 +1898,10 @@ public class StreamsConfig extends AbstractConfig {
     @SuppressWarnings("WeakerAccess")
     public TimestampExtractor defaultTimestampExtractor() {
         return getConfiguredInstance(DEFAULT_TIMESTAMP_EXTRACTOR_CLASS_CONFIG, TimestampExtractor.class);
+    }
+
+    public ProcessingExceptionHandler defaultProcessingExceptionHandler() {
+        return getConfiguredInstance(DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG, ProcessingExceptionHandler.class);
     }
 
     @SuppressWarnings("WeakerAccess")

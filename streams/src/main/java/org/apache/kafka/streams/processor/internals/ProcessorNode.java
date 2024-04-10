@@ -16,19 +16,19 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
+import org.apache.kafka.streams.errors.ProcessingExceptionHandler;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.Punctuator;
-import org.apache.kafka.streams.processor.api.FixedKeyProcessor;
-import org.apache.kafka.streams.processor.api.FixedKeyProcessorContext;
-import org.apache.kafka.streams.processor.api.InternalFixedKeyRecordFactory;
-import org.apache.kafka.streams.processor.api.Processor;
-import org.apache.kafka.streams.processor.api.Record;
+import org.apache.kafka.streams.processor.api.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static org.apache.kafka.streams.StreamsConfig.DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG;
+import static org.apache.kafka.streams.StreamsConfig.DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG;
 
 public class ProcessorNode<KIn, VIn, KOut, VOut> {
 
@@ -46,13 +46,16 @@ public class ProcessorNode<KIn, VIn, KOut, VOut> {
 
     private boolean closed = true;
 
+    private final ProcessingExceptionHandler processingExceptionHandler;
+
     public ProcessorNode(final String name) {
-        this(name, (Processor<KIn, VIn, KOut, VOut>) null, null);
+        this(name, (Processor<KIn, VIn, KOut, VOut>) null, null, null);
     }
 
     public ProcessorNode(final String name,
                          final Processor<KIn, VIn, KOut, VOut> processor,
-                         final Set<String> stateStores) {
+                         final Set<String> stateStores,
+                         final ProcessingExceptionHandler processingExceptionHandler) {
 
         this.name = name;
         this.processor = processor;
@@ -60,11 +63,13 @@ public class ProcessorNode<KIn, VIn, KOut, VOut> {
         this.children = new ArrayList<>();
         this.childByName = new HashMap<>();
         this.stateStores = stateStores;
+        this.processingExceptionHandler = processingExceptionHandler;
     }
 
     public ProcessorNode(final String name,
                          final FixedKeyProcessor<KIn, VIn, VOut> processor,
-                         final Set<String> stateStores) {
+                         final Set<String> stateStores,
+                         final ProcessingExceptionHandler processingExceptionHandler) {
 
         this.name = name;
         this.processor = null;
@@ -72,6 +77,7 @@ public class ProcessorNode<KIn, VIn, KOut, VOut> {
         this.children = new ArrayList<>();
         this.childByName = new HashMap<>();
         this.stateStores = stateStores;
+        this.processingExceptionHandler = processingExceptionHandler;
     }
 
     public final String name() {
@@ -143,7 +149,7 @@ public class ProcessorNode<KIn, VIn, KOut, VOut> {
         }
     }
 
-
+    @SuppressWarnings("unchecked")
     public void process(final Record<KIn, VIn> record) {
         throwIfClosed();
 
@@ -162,18 +168,35 @@ public class ProcessorNode<KIn, VIn, KOut, VOut> {
         } catch (final ClassCastException e) {
             final String keyClass = record.key() == null ? "unknown because key is null" : record.key().getClass().getName();
             final String valueClass = record.value() == null ? "unknown because value is null" : record.value().getClass().getName();
-            throw new StreamsException(String.format("ClassCastException invoking processor: %s. Do the Processor's "
-                    + "input types match the deserialized types? Check the Serde setup and change the default Serdes in "
-                    + "StreamConfig or provide correct Serdes via method parameters. Make sure the Processor can accept "
-                    + "the deserialized input of type key: %s, and value: %s.%n"
-                    + "Note that although incorrect Serdes are a common cause of error, the cast exception might have "
-                    + "another cause (in user code, for example). For example, if a processor wires in a store, but casts "
-                    + "the generics incorrectly, a class cast exception could be raised during processing, but the "
-                    + "cause would not be wrong Serdes.",
-                    this.name(),
-                    keyClass,
-                    valueClass),
-                e);
+
+            ProcessingExceptionHandler.ProcessingHandlerResponse response = this.processingExceptionHandler
+                    .handle(internalProcessorContext, (Record<Object, Object>) record, e);
+
+            if (response == ProcessingExceptionHandler.ProcessingHandlerResponse.FAIL) {
+                throw new StreamsException(String.format("ClassCastException invoking processor: %s. Do the Processor's "
+                                + "input types match the deserialized types? Check the Serde setup and change the default Serdes in "
+                                + "StreamConfig or provide correct Serdes via method parameters. Make sure the Processor can accept "
+                                + "the deserialized input of type key: %s, and value: %s.%n"
+                                + "Note that although incorrect Serdes are a common cause of error, the cast exception might have "
+                                + "another cause (in user code, for example). For example, if a processor wires in a store, but casts "
+                                + "the generics incorrectly, a class cast exception could be raised during processing, but the "
+                                + "cause would not be wrong Serdes.",
+                        this.name(),
+                        keyClass,
+                        valueClass),
+                        e);
+            }
+        } catch (Exception e) {
+            ProcessingExceptionHandler.ProcessingHandlerResponse response = this.processingExceptionHandler
+                    .handle(internalProcessorContext, (Record<Object, Object>) record, e);
+
+            if (response == ProcessingExceptionHandler.ProcessingHandlerResponse.FAIL) {
+                throw new StreamsException("Processing exception handler is set to fail upon" +
+                        " a processing error. If you would rather have the streaming pipeline" +
+                        " continue after a deserialization error, please set the " +
+                        DEFAULT_PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG + " appropriately.",
+                        e);
+            }
         }
     }
 

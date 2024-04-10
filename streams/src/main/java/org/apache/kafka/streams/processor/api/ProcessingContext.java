@@ -36,6 +36,12 @@ import java.util.Optional;
  * Processor context interface.
  */
 public interface ProcessingContext {
+    /**
+     * Return the processor node id.
+     *
+     * @return the processor node id
+     */
+    String processorNodeId();
 
     /**
      * Return the application id.
