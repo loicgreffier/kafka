@@ -11,7 +11,7 @@ public class ProcessingLogAndFailExceptionHandler implements ProcessingException
     private static final Logger log = LoggerFactory.getLogger(ProcessingLogAndFailExceptionHandler.class);
 
     @Override
-    public ProcessingHandlerResponse handle(ProcessingContext context, Record<Object, Object> record, Exception exception) {
+    public ProcessingHandlerResponse handle(ProcessingContext context, Record<?, ?> record, Exception exception) {
         log.error("Exception caught during Processing, processorNodeId: {}, key: {}, value: {}",
                 context.processorNodeId(), record.key(), record.value(), exception);
 

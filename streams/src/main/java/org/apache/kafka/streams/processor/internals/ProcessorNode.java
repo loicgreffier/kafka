@@ -188,7 +188,7 @@ public class ProcessorNode<KIn, VIn, KOut, VOut> {
             }
         } catch (Exception e) {
             ProcessingExceptionHandler.ProcessingHandlerResponse response = this.processingExceptionHandler
-                    .handle(internalProcessorContext, (Record<Object, Object>) record, e);
+                    .handle(internalProcessorContext, record, e);
 
             if (response == ProcessingExceptionHandler.ProcessingHandlerResponse.FAIL) {
                 throw new StreamsException("Processing exception handler is set to fail upon" +
