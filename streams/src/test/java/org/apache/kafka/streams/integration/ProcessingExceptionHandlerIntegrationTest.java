@@ -28,12 +28,13 @@ import org.apache.kafka.streams.TopologyTestDriver;
 import org.apache.kafka.streams.errors.ErrorHandlerContext;
 import org.apache.kafka.streams.errors.ProcessingExceptionHandler;
 import org.apache.kafka.streams.errors.StreamsException;
-import org.apache.kafka.streams.kstream.Consumed;
+import org.apache.kafka.streams.kstream.Named;
+import org.apache.kafka.streams.kstream.TimeWindows;
 import org.apache.kafka.streams.processor.api.ContextualProcessor;
 import org.apache.kafka.streams.processor.api.ProcessorSupplier;
 import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.test.MockProcessorSupplier;
-
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -49,6 +50,7 @@ import java.util.Properties;
 import static org.apache.kafka.common.utils.Utils.mkEntry;
 import static org.apache.kafka.common.utils.Utils.mkMap;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -56,10 +58,90 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Timeout(600)
 @Tag("integration")
 public class ProcessingExceptionHandlerIntegrationTest {
+    private final String failingProcessorName = "FAILING-PROCESSOR";
     private final String threadId = Thread.currentThread().getName();
+    private MockProcessorSupplier<String, String, Void, Void> processor;
+
+    @BeforeEach
+    void setUp() {
+        // Reset processor count
+        processor = new MockProcessorSupplier<>();
+    }
 
     @Test
-    public void shouldFailWhenProcessingExceptionOccurs() {
+    void shouldFailWhenProcessingExceptionOccursInTopologyWithMultipleStatelessNodes() {
+        final StreamsBuilder streamsBuilder = buildTopologyWithMultipleStatelessNodes();
+        runAndFailStreamsOnProcessingException(streamsBuilder);
+    }
+
+    @Test
+    void shouldContinueWhenProcessingExceptionOccursInTopologyWithMultipleStatelessNodes() {
+        final StreamsBuilder streamsBuilder = buildTopologyWithMultipleStatelessNodes();
+        runAndContinueStreamsOnProcessingException(streamsBuilder);
+    }
+
+    @Test
+    void shouldFailWhenProcessingExceptionOccursInTopologyWithCachingKeyValueStore() {
+        final StreamsBuilder streamsBuilder = buildTopologyWithCachingKeyValueStore();
+        runAndFailStreamsOnProcessingException(streamsBuilder);
+    }
+
+    @Test
+    void shouldContinueWhenProcessingExceptionOccursInTopologyWithCachingKeyValueStore() {
+        final StreamsBuilder streamsBuilder = buildTopologyWithCachingKeyValueStore();
+        runAndContinueStreamsOnProcessingException(streamsBuilder);
+    }
+
+    @Test
+    void shouldFailWhenProcessingExceptionOccursInTopologyWithCachingWindowStore() {
+        final StreamsBuilder streamsBuilder = buildTopologyWithCachingWindowStore();
+        runAndFailStreamsOnProcessingException(streamsBuilder);
+    }
+
+    @Test
+    void shouldContinueWhenProcessingExceptionOccursInTopologyWithCachingWindowStore() {
+        final StreamsBuilder streamsBuilder = buildTopologyWithCachingWindowStore();
+        runAndContinueStreamsOnProcessingException(streamsBuilder);
+    }
+
+    private StreamsBuilder buildTopologyWithMultipleStatelessNodes() {
+        final StreamsBuilder streamsBuilder = new StreamsBuilder();
+        streamsBuilder
+            .<String, String>stream("TOPIC_NAME")
+            .map(KeyValue::new)
+            .mapValues(value -> value)
+            .process(runtimeErrorProcessorSupplierMock(), Named.as(failingProcessorName))
+            .process(processor);
+        return streamsBuilder;
+    }
+
+    private StreamsBuilder buildTopologyWithCachingKeyValueStore() {
+        final StreamsBuilder streamsBuilder = new StreamsBuilder();
+        streamsBuilder
+            .<String, String>stream("TOPIC_NAME")
+            .groupByKey()
+            .aggregate(() -> "", (key, value, aggregate) -> value)
+            .toStream()
+            .process(runtimeErrorProcessorSupplierMock(), Named.as(failingProcessorName))
+            .process(processor);
+        return streamsBuilder;
+    }
+
+    private StreamsBuilder buildTopologyWithCachingWindowStore() {
+        final StreamsBuilder streamsBuilder = new StreamsBuilder();
+        streamsBuilder
+            .<String, String>stream("TOPIC_NAME")
+            .groupByKey()
+            .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(5)))
+            .aggregate(() -> "", (key, value, aggregate) -> value)
+            .toStream()
+            .selectKey((key, value) -> key.key())
+            .process(runtimeErrorProcessorSupplierMock(), Named.as(failingProcessorName))
+            .process(processor);
+        return streamsBuilder;
+    }
+
+    private void runAndFailStreamsOnProcessingException(final StreamsBuilder streamsBuilder) {
         final List<KeyValue<String, String>> events = Arrays.asList(
             new KeyValue<>("ID123-1", "ID123-A1"),
             new KeyValue<>("ID123-2-ERR", "ID123-A2"),
@@ -71,29 +153,20 @@ public class ProcessingExceptionHandlerIntegrationTest {
             new KeyValueTimestamp<>("ID123-1", "ID123-A1", 0)
         );
 
-        final MockProcessorSupplier<String, String, Void, Void> processor = new MockProcessorSupplier<>();
-        final StreamsBuilder builder = new StreamsBuilder();
-        builder
-            .stream("TOPIC_NAME", Consumed.with(Serdes.String(), Serdes.String()))
-            .map(KeyValue::new)
-            .mapValues(value -> value)
-            .process(runtimeErrorProcessorSupplierMock())
-            .process(processor);
-
         final Properties properties = new Properties();
         properties.put(StreamsConfig.PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG, FailProcessingExceptionHandlerMockTest.class);
+        properties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
+        properties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
 
-        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), properties, Instant.ofEpochMilli(0L))) {
+        try (final TopologyTestDriver driver = new TopologyTestDriver(streamsBuilder.build(), properties, Instant.ofEpochMilli(0L))) {
             final TestInputTopic<String, String> inputTopic = driver.createInputTopic("TOPIC_NAME", new StringSerializer(), new StringSerializer());
 
             final StreamsException exception = assertThrows(StreamsException.class,
                 () -> inputTopic.pipeKeyValueList(events, Instant.EPOCH, Duration.ZERO));
 
-            assertTrue(exception.getMessage().contains("Exception caught in process. "
-                + "taskId=0_0, processor=KSTREAM-SOURCE-0000000000, topic=TOPIC_NAME, "
-                + "partition=0, offset=1, stacktrace=java.lang.RuntimeException: "
-                + "Exception should be handled by processing exception handler"));
-            assertEquals(1, processor.theCapturedProcessor().processed().size());
+            assertInstanceOf(RuntimeException.class, exception.getCause());
+            assertEquals("Exception should be handled by processing exception handler", exception.getCause().getMessage());
+            assertEquals(expectedProcessedRecords.size(), processor.theCapturedProcessor().processed().size());
             assertIterableEquals(expectedProcessedRecords, processor.theCapturedProcessor().processed());
 
             final MetricName dropTotal = droppedRecordsTotalMetric();
@@ -104,8 +177,7 @@ public class ProcessingExceptionHandlerIntegrationTest {
         }
     }
 
-    @Test
-    public void shouldContinueWhenProcessingExceptionOccurs() {
+    private void runAndContinueStreamsOnProcessingException(final StreamsBuilder streamsBuilder) {
         final List<KeyValue<String, String>> events = Arrays.asList(
             new KeyValue<>("ID123-1", "ID123-A1"),
             new KeyValue<>("ID123-2-ERR", "ID123-A2"),
@@ -122,19 +194,12 @@ public class ProcessingExceptionHandlerIntegrationTest {
             new KeyValueTimestamp<>("ID123-6", "ID123-A6", 0)
         );
 
-        final MockProcessorSupplier<String, String, Void, Void> processor = new MockProcessorSupplier<>();
-        final StreamsBuilder builder = new StreamsBuilder();
-        builder
-            .stream("TOPIC_NAME", Consumed.with(Serdes.String(), Serdes.String()))
-            .map(KeyValue::new)
-            .mapValues(value -> value)
-            .process(runtimeErrorProcessorSupplierMock())
-            .process(processor);
-
         final Properties properties = new Properties();
         properties.put(StreamsConfig.PROCESSING_EXCEPTION_HANDLER_CLASS_CONFIG, ContinueProcessingExceptionHandlerMockTest.class);
+        properties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
+        properties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
 
-        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), properties, Instant.ofEpochMilli(0L))) {
+        try (final TopologyTestDriver driver = new TopologyTestDriver(streamsBuilder.build(), properties, Instant.ofEpochMilli(0L))) {
             final TestInputTopic<String, String> inputTopic = driver.createInputTopic("TOPIC_NAME", new StringSerializer(), new StringSerializer());
             inputTopic.pipeKeyValueList(events, Instant.EPOCH, Duration.ZERO);
 
@@ -152,7 +217,7 @@ public class ProcessingExceptionHandlerIntegrationTest {
     public static class ContinueProcessingExceptionHandlerMockTest implements ProcessingExceptionHandler {
         @Override
         public ProcessingExceptionHandler.ProcessingHandlerResponse handle(final ErrorHandlerContext context, final Record<?, ?> record, final Exception exception) {
-            assertProcessingExceptionHandlerInputs(context, record, exception);
+            assertProcessingExceptionHandlerInputs(context, record, exception, "FAILING-PROCESSOR");
             return ProcessingExceptionHandler.ProcessingHandlerResponse.CONTINUE;
         }
 
@@ -165,7 +230,7 @@ public class ProcessingExceptionHandlerIntegrationTest {
     public static class FailProcessingExceptionHandlerMockTest implements ProcessingExceptionHandler {
         @Override
         public ProcessingExceptionHandler.ProcessingHandlerResponse handle(final ErrorHandlerContext context, final Record<?, ?> record, final Exception exception) {
-            assertProcessingExceptionHandlerInputs(context, record, exception);
+            assertProcessingExceptionHandlerInputs(context, record, exception, "FAILING-PROCESSOR");
             return ProcessingExceptionHandler.ProcessingHandlerResponse.FAIL;
         }
 
@@ -175,13 +240,16 @@ public class ProcessingExceptionHandlerIntegrationTest {
         }
     }
 
-    private static void assertProcessingExceptionHandlerInputs(final ErrorHandlerContext context, final Record<?, ?> record, final Exception exception) {
+    private static void assertProcessingExceptionHandlerInputs(final ErrorHandlerContext context,
+                                                               final Record<?, ?> record,
+                                                               final Exception exception,
+                                                               final String failingProcessorName) {
         assertTrue(Arrays.asList("ID123-2-ERR", "ID123-5-ERR").contains(new String(context.sourceRawKey())));
         assertTrue(Arrays.asList("ID123-A2", "ID123-A5").contains(new String(context.sourceRawValue())));
         assertTrue(Arrays.asList("ID123-2-ERR", "ID123-5-ERR").contains((String) record.key()));
         assertTrue(Arrays.asList("ID123-A2", "ID123-A5").contains((String) record.value()));
         assertEquals("TOPIC_NAME", context.topic());
-        assertEquals("KSTREAM-PROCESSOR-0000000003", context.processorNodeId());
+        assertEquals(failingProcessorName, context.processorNodeId());
         assertTrue(exception.getMessage().contains("Exception should be handled by processing exception handler"));
     }
 
